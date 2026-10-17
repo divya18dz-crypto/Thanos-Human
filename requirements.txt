@@ -1,0 +1,4 @@
+# Core dependencies for Thanos vs Human Rock-Paper-Scissors AI
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+numpy>=1.24.0
