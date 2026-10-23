@@ -252,24 +252,34 @@ function detectFingerStates(landmarks) {
 
   // Thumb: Tip (4) vs IP (3) relative to Pinky MCP (17)
   const thumbExtended =
-    calculateDistance(landmarks[4], pinkyMcp) > calculateDistance(landmarks[3], pinkyMcp);
+    calculateDistance(landmarks[4], pinkyMcp) > calculateDistance(landmarks[3], pinkyMcp) * 1.05;
 
   const fingerIndices = {
-    index: [8, 6],
-    middle: [12, 10],
-    ring: [16, 14],
-    pinky: [20, 18],
+    index: [8, 6, 5],
+    middle: [12, 10, 9],
+    ring: [16, 14, 13],
+    pinky: [20, 18, 17],
   };
 
   const states = { thumb: thumbExtended };
 
-  for (const [fingerName, [tipId, pipId]] of Object.entries(fingerIndices)) {
+  for (const [fingerName, [tipId, pipId, mcpId]] of Object.entries(fingerIndices)) {
     const tip = landmarks[tipId];
     const pip = landmarks[pipId];
-    const isAbovePip = tip.y < pip.y; // Landmark Y is 0 at top, 1 at bottom
-    const isFartherFromWrist =
-      calculateDistance(tip, wrist) > calculateDistance(pip, wrist);
-    states[fingerName] = isAbovePip && isFartherFromWrist;
+    const mcp = landmarks[mcpId];
+
+    const distTipWrist = calculateDistance(tip, wrist);
+    const distPipWrist = calculateDistance(pip, wrist);
+    const distTipMcp = calculateDistance(tip, mcp);
+    const distPipMcp = calculateDistance(pip, mcp);
+
+    // Finger is extended if tip is farther from wrist & MCP than PIP is,
+    // OR if tip is clearly above PIP when hand is upright
+    const isExtended =
+      (distTipWrist > distPipWrist * 1.08 && distTipMcp > distPipMcp) ||
+      (tip.y < pip.y && distTipWrist > distPipWrist);
+
+    states[fingerName] = isExtended;
   }
 
   return states;
@@ -280,8 +290,8 @@ function classifyGesture(fingerStates, landmarks) {
 
   // 1. ROCK: All 4 main fingers folded; thumb not pointing up (rejects Thumbs Up)
   if (!index && !middle && !ring && !pinky) {
-    if (thumb && landmarks[4].y < landmarks[6].y) {
-      return "UNKNOWN";
+    if (thumb && landmarks[4].y < landmarks[6].y && landmarks[4].y < landmarks[3].y) {
+      return "UNKNOWN"; // Thumbs up rejected
     }
     return "ROCK";
   }
@@ -349,6 +359,8 @@ class GameApp {
     this.roundResults = []; // stores outcomes for pills
 
     this.liveGesture = "UNKNOWN";
+    this.lastValidGesture = null;
+    this.lastValidGestureTime = 0;
     this.currentRoundPlan = null; // { predicted_move, counter_move, ... }
     this.lockedHumanMove = null;
     this.lockedThanosMove = null;
@@ -498,7 +510,7 @@ class GameApp {
   }
 
   // ============================================================================
-  // MediaPipe Hands Initialization
+  // MediaPipe Hands Initialization (Optimized for High-FPS Low-Latency Web)
   // ============================================================================
   async startCamera() {
     sound.init();
@@ -510,26 +522,37 @@ class GameApp {
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
       });
 
+      // modelComplexity: 0 uses the lightweight model optimized for browser 60 FPS
       this.handsDetector.setOptions({
         maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.65,
-        minTrackingConfidence: 0.65,
+        modelComplexity: 0,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
       });
 
       this.handsDetector.onResults((results) => this.onMediaPipeResults(results));
 
+      // Concurrency guard drops stale frames to eliminate pipeline lag entirely
+      let isProcessing = false;
       this.cameraInstance = new Camera(this.videoEl, {
         onFrame: async () => {
-          await this.handsDetector.send({ image: this.videoEl });
+          if (isProcessing) return; // Drop frame if previous is still inferring
+          isProcessing = true;
+          try {
+            await this.handsDetector.send({ image: this.videoEl });
+          } catch (e) {
+            console.warn("MediaPipe processing frame dropped:", e);
+          } finally {
+            isProcessing = false;
+          }
         },
-        width: 1280,
-        height: 720,
+        width: 640,
+        height: 480,
       });
 
       await this.cameraInstance.start();
       this.cameraActive = true;
-      this.liveGestureTextEl.textContent = "CAMERA ACTIVE • TRACKING 3D JOINTS";
+      this.liveGestureTextEl.textContent = "CAMERA ACTIVE • 60 FPS REAL-TIME";
     } catch (err) {
       console.error("Camera access error:", err);
       alert("Camera access error: " + err.message + "\nYou can still play via Interactive Buttons!");
@@ -541,28 +564,36 @@ class GameApp {
     const canvas = this.canvasEl;
     const ctx = this.ctx;
 
-    canvas.width = results.image.width || 1280;
-    canvas.height = results.image.height || 720;
+    const w = results.image.width || 640;
+    const h = results.image.height || 480;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
 
     // Draw camera image
     ctx.save();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(results.image, 0, 0, w, h);
 
     // Subtle dark cosmic overlay
-    ctx.fillStyle = "rgba(11, 7, 18, 0.25)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "rgba(11, 7, 18, 0.18)";
+    ctx.fillRect(0, 0, w, h);
 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
       const landmarks = results.multiHandLandmarks[0];
 
-      // Draw glowing landmark skeleton
-      this.drawSkeleton(landmarks, canvas.width, canvas.height);
+      // Draw skeleton (zero CPU shadowBlur overhead)
+      this.drawSkeleton(landmarks, w, h);
 
       // Classify Gesture
       const fingerStates = detectFingerStates(landmarks);
       const gesture = classifyGesture(fingerStates, landmarks);
       this.liveGesture = gesture;
+
+      if (gesture !== "UNKNOWN" && gesture !== "NO_HAND") {
+        this.lastValidGesture = gesture;
+        this.lastValidGestureTime = performance.now();
+      }
 
       const badgeText =
         gesture === "UNKNOWN"
@@ -590,11 +621,9 @@ class GameApp {
       [0, 17],                              // Palm base
     ];
 
-    // Draw Lines
-    ctx.strokeStyle = "rgba(157, 78, 221, 0.75)";
-    ctx.lineWidth = 4;
-    ctx.shadowColor = "#ffd166";
-    ctx.shadowBlur = 8;
+    // Ultra-fast GPU-friendly drawing (no shadowBlur CPU penalty)
+    ctx.strokeStyle = "#bf5af2";
+    ctx.lineWidth = 3.5;
 
     connections.forEach(([i, j]) => {
       const p1 = landmarks[i];
@@ -608,14 +637,11 @@ class GameApp {
     // Draw Landmark Points
     landmarks.forEach((p, idx) => {
       ctx.beginPath();
-      ctx.arc(p.x * w, p.y * h, idx === 4 || idx === 8 || idx === 12 || idx === 16 || idx === 20 ? 7 : 4, 0, 2 * Math.PI);
-      ctx.fillStyle = idx === 0 ? "#ffd166" : "#06d6a0";
-      ctx.shadowColor = "#06d6a0";
-      ctx.shadowBlur = 10;
+      const isTip = idx === 4 || idx === 8 || idx === 12 || idx === 16 || idx === 20;
+      ctx.arc(p.x * w, p.y * h, isTip ? 6 : 3.5, 0, 2 * Math.PI);
+      ctx.fillStyle = idx === 0 ? "#ffd166" : isTip ? "#06d6a0" : "#ffffff";
       ctx.fill();
     });
-
-    ctx.shadowBlur = 0;
   }
 
   // ============================================================================
@@ -687,6 +713,7 @@ class GameApp {
     this.countdownSubtext.textContent = "READY YOUR GESTURE...";
     sound.playCountdown(count);
 
+    // Snappy 750ms interval (2.5s total instead of sluggish 4.5s)
     this.countdownTimer = setInterval(() => {
       count -= 1;
       if (count > 0) {
@@ -704,7 +731,7 @@ class GameApp {
         const gestureToLock = overrideGesture || this.liveGesture;
         this.lockRoundOutcome(gestureToLock);
       }
-    }, 1000);
+    }, 750);
   }
 
   lockRoundOutcome(humanMove) {
@@ -714,14 +741,26 @@ class GameApp {
       this.actionBtn.disabled = false;
     }
 
+    let finalMove = humanMove;
+
+    // Grace buffer: if live gesture flickered to UNKNOWN right at SHOOT!,
+    // use the valid gesture held during the last 500ms!
+    if (
+      (!finalMove || finalMove === "UNKNOWN" || finalMove === "NO_HAND") &&
+      this.lastValidGesture &&
+      performance.now() - this.lastValidGestureTime < 500
+    ) {
+      finalMove = this.lastValidGesture;
+    }
+
     // Check if gesture is valid (Rock, Paper, Scissors)
-    if (!humanMove || humanMove === "UNKNOWN" || humanMove === "NO_HAND") {
+    if (!finalMove || finalMove === "UNKNOWN" || finalMove === "NO_HAND") {
       this.triggerRetry();
       return;
     }
 
     this.gameState = "LOCKED_RESULT";
-    this.lockedHumanMove = humanMove;
+    this.lockedHumanMove = finalMove;
     this.lockedThanosMove = this.currentRoundPlan.counter_move;
 
     // Determine round winner
@@ -846,6 +885,8 @@ class GameApp {
     this.currentRoundPlan = null;
     this.lockedHumanMove = null;
     this.lockedThanosMove = null;
+    this.lastValidGesture = null;
+    this.lastValidGestureTime = 0;
 
     if (this.countdownTimer) clearInterval(this.countdownTimer);
     this.countdownOverlay.style.display = "none";
