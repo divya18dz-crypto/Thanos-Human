@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Thanos vs. Human | AI Rock-Paper-Scissors</title>
+  <meta name="description" content="Play Rock-Paper-Scissors against Thanos powered by real-time MediaPipe hand tracking and an adaptive Markov Chain AI strategy predictor." />
+  
+  <!-- Google Fonts: Orbitron & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet" />
+
+  <!-- MediaPipe Hands & Camera Utils CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Ambient Cosmic Background -->
+  <div class="stars-bg"></div>
+  <div class="nebula nebula-1"></div>
+  <div class="nebula nebula-2"></div>
+
+  <!-- Main Container -->
+  <div class="app-container">
+    
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="brand">
+        <span class="gauntlet-icon">⚡</span>
+        <div>
+          <h1 class="title">THANOS <span class="vs-text">VS</span> HUMAN</h1>
+          <p class="subtitle">AI Rock-Paper-Scissors • Powered by MediaPipe & Markov Intelligence</p>
+        </div>
+      </div>
+
+      <!-- Infinity Stones Display -->
+      <div class="infinity-stones" id="infinityStones" title="Infinity Stones Power Bar">
+        <span class="stone power" title="Power Stone (Round 1)">●</span>
+        <span class="stone space" title="Space Stone (Round 2)">●</span>
+        <span class="stone reality" title="Reality Stone (Round 3)">●</span>
+        <span class="stone soul" title="Soul Stone (Round 4)">●</span>
+        <span class="stone time" title="Time Stone (Round 5)">●</span>
+        <span class="stone mind" title="Mind Stone (Markov AI Brain)">●</span>
+      </div>
+
+      <!-- Controls & Mute -->
+      <div class="header-actions">
+        <button id="soundBtn" class="icon-btn" title="Toggle Sound (M)">
+          <span id="soundIcon">🔊</span>
+        </button>
+        <button id="cameraToggleBtn" class="icon-btn" title="Toggle Camera">
+          <span>📹</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Match Status & Scoreboard -->
+    <section class="scoreboard-bar glass-card">
+      <div class="player-score human-side">
+        <div class="avatar-ring human-glow">
+          <span class="avatar-emoji">🧑‍🚀</span>
+        </div>
+        <div class="score-meta">
+          <span class="label">HUMAN</span>
+          <span class="score-number" id="humanScore">0</span>
+        </div>
+      </div>
+
+      <div class="round-tracker">
+        <span class="match-badge" id="matchBadge">5-ROUND CLASH</span>
+        <div class="round-display">
+          ROUND <span id="currentRound">1</span> <span class="max-rounds">/ 5</span>
+        </div>
+        <div class="round-pills" id="roundPills">
+          <span class="pill" id="pill-1">1</span>
+          <span class="pill" id="pill-2">2</span>
+          <span class="pill" id="pill-3">3</span>
+          <span class="pill" id="pill-4">4</span>
+          <span class="pill" id="pill-5">5</span>
+        </div>
+      </div>
+
+      <div class="player-score thanos-side">
+        <div class="score-meta text-right">
+          <span class="label">THANOS</span>
+          <span class="score-number" id="thanosScore">0</span>
+        </div>
+        <div class="avatar-ring thanos-glow">
+          <span class="avatar-emoji">🪐</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Workspace: Camera Stage + Thanos AI Panel -->
+    <main class="game-stage">
+      
+      <!-- Video / Canvas Feed -->
+      <div class="stage-left glass-card">
+        <div class="canvas-wrapper" id="canvasWrapper">
+          <!-- Hidden video for MediaPipe feed -->
+          <video id="webcam" playsinline autoplay muted></video>
+          <!-- Mirrored canvas for rendering stream + HUD -->
+          <canvas id="outputCanvas"></canvas>
+
+          <!-- Dynamic Countdown Overlay -->
+          <div class="countdown-overlay" id="countdownOverlay" style="display: none;">
+            <div class="countdown-pulse" id="countdownPulse">3</div>
+            <div class="countdown-subtext" id="countdownSubtext">GET READY!</div>
+          </div>
+
+          <!-- Live Gesture Tag in Corner -->
+          <div class="live-gesture-badge" id="liveGestureBadge">
+            <span class="dot"></span>
+            <span id="liveGestureText">DETECTING HAND...</span>
+          </div>
+
+          <!-- Camera Loading / Prompt Overlay -->
+          <div class="camera-prompt" id="cameraPrompt">
+            <div class="prompt-card">
+              <div class="prompt-icon">📷</div>
+              <h3>Webcam Access Required</h3>
+              <p>Allow camera permissions to enable real-time hand gesture tracking via MediaPipe.</p>
+              <button id="enableCamBtn" class="cosmic-btn primary-btn">
+                <span>ENABLE WEBCAM</span>
+              </button>
+              <button id="skipCamBtn" class="text-link-btn">
+                Play without camera (Interactive Mode)
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stage Bottom Control Bar -->
+        <div class="stage-controls">
+          <button id="actionBtn" class="cosmic-btn primary-btn pulse-glow">
+            <span id="actionBtnText">PLAY (SPACE)</span>
+          </button>
+          
+          <button id="lobbyBtn" class="cosmic-btn secondary-btn" style="display: none;">
+            <span>‹ LOBBY</span>
+          </button>
+
+          <!-- Fallback Manual Moves (Visible if webcam off or user prefers) -->
+          <div class="manual-moves" id="manualMoves">
+            <span class="manual-label">Quick Gesture:</span>
+            <button class="gesture-chip" data-gesture="ROCK" title="Rock">✊ ROCK</button>
+            <button class="gesture-chip" data-gesture="PAPER" title="Paper">✋ PAPER</button>
+            <button class="gesture-chip" data-gesture="SCISSORS" title="Scissors">✌️ SCISSORS</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Thanos AI Mind & Clash Center -->
+      <aside class="stage-right">
+        
+        <!-- Clash Result Card (Active after Shoot) -->
+        <div class="glass-card clash-card" id="clashCard">
+          <h3 class="panel-title">
+            <span class="gem">💎</span> MOVE SHOWDOWN
+          </h3>
+
+          <div class="showdown-arena">
+            <div class="showdown-fighter human">
+              <span class="fighter-label">YOUR MOVE</span>
+              <div class="fighter-box" id="humanMoveBox">
+                <span class="box-icon" id="humanMoveIcon">❓</span>
+                <span class="box-text" id="humanMoveName">WAITING</span>
+              </div>
+            </div>
+
+            <div class="showdown-vs">VS</div>
+
+            <div class="showdown-fighter thanos">
+              <span class="fighter-label">THANOS MOVE</span>
+              <div class="fighter-box" id="thanosMoveBox">
+                <span class="box-icon" id="thanosMoveIcon">❓</span>
+                <span class="box-text" id="thanosMoveName">WAITING</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Outcome Headline -->
+          <div class="outcome-banner" id="outcomeBanner">
+            <h4 id="outcomeTitle">PRESS PLAY TO BEGIN</h4>
+            <p id="outcomeDesc">Five rounds to decide the fate of the universe.</p>
+          </div>
+        </div>
+
+        <!-- Thanos Brain: Mind Stone AI Predictor -->
+        <div class="glass-card ai-card">
+          <div class="panel-header">
+            <h3 class="panel-title">
+              <span class="gem mind-gem">🔮</span> MIND STONE AI PREDICTOR
+            </h3>
+            <span class="model-badge" id="aiModelBadge">MARKOV CHAIN</span>
+          </div>
+
+          <div class="ai-speech-bubble" id="thanosSpeech">
+            "I will predict your every pattern, mortal. Your choices are bound by destiny."
+          </div>
+
+          <div class="ai-metrics">
+            <div class="metric-row">
+              <span class="metric-label">AI Confidence:</span>
+              <div class="confidence-bar-wrapper">
+                <div class="confidence-bar" id="confidenceBar" style="width: 33%;"></div>
+              </div>
+              <span class="metric-val" id="confidenceVal">33%</span>
+            </div>
+
+            <div class="metric-row">
+              <span class="metric-label">Forecast Model:</span>
+              <span class="metric-val highlight" id="aiModelName">First-Order Markov Transition</span>
+            </div>
+
+            <div class="ai-explanation" id="aiExplanation">
+              Round 1: Insufficient history. Thanos chose a cosmic random counter.
+            </div>
+          </div>
+
+          <!-- Human Move Statistics -->
+          <div class="stats-grid">
+            <div class="stat-cell">
+              <span class="stat-name">✊ ROCK</span>
+              <span class="stat-value" id="statRock">0 (0%)</span>
+            </div>
+            <div class="stat-cell">
+              <span class="stat-name">✋ PAPER</span>
+              <span class="stat-value" id="statPaper">0 (0%)</span>
+            </div>
+            <div class="stat-cell">
+              <span class="stat-name">✌️ SCISSORS</span>
+              <span class="stat-value" id="statScissors">0 (0%)</span>
+            </div>
+          </div>
+
+          <div class="history-strip">
+            <span class="strip-label">History:</span>
+            <div class="strip-moves" id="historyStrip">
+              <span class="empty-text">No completed rounds yet</span>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+    </main>
+
+    <!-- Final Match Over Victory Podium Modal -->
+    <div class="modal-backdrop" id="podiumModal" style="display: none;">
+      <div class="glass-card podium-card">
+        <div class="podium-header">
+          <div class="trophy-sparkle" id="podiumIcon">👑</div>
+          <h2 class="podium-title" id="podiumTitle">CHAMPION OF THE UNIVERSE</h2>
+          <p class="podium-subtitle" id="podiumSubtitle">5 Rounds Completed</p>
+        </div>
+
+        <div class="podium-scores">
+          <div class="podium-col human-col">
+            <span class="podium-tag">HUMAN</span>
+            <span class="podium-num" id="podiumHumanScore">0</span>
+            <span class="podium-sub">ROUNDS WON</span>
+          </div>
+          <div class="podium-vs">VS</div>
+          <div class="podium-col thanos-col">
+            <span class="podium-tag">THANOS</span>
+            <span class="podium-num" id="podiumThanosScore">0</span>
+            <span class="podium-sub">ROUNDS WON</span>
+          </div>
+        </div>
+
+        <div class="podium-summary" id="podiumSummary">
+          You have restored balance to the cosmos!
+        </div>
+
+        <div class="podium-actions">
+          <button id="podiumRestartBtn" class="cosmic-btn primary-btn pulse-glow">
+            <span>PLAY AGAIN (NEW MATCH)</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <span>Thanos vs. Human AI • 3D MediaPipe Computer Vision • Markov Transition Model</span>
+      <span class="shortcuts">Shortcuts: [SPACE] Advance • [R] Retry • [M] Mute</span>
+    </footer>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

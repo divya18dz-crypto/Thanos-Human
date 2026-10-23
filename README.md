@@ -19,6 +19,21 @@ A real-time Computer Vision and Artificial Intelligence game where a human plays
 
 ## Installation & Setup
 
+### Option A: Web Version (Instant Live on Vercel or Browser)
+1. **Deploy to Vercel:**
+   - Push to your GitHub repository: `git push origin main`
+   - Import the repository on [Vercel](https://vercel.com/new).
+   - Click **Deploy** — Vercel will automatically serve the static web app at a public live `.vercel.app` URL!
+2. **Or Run Locally in Browser:**
+   - Double-click `index.html` to open directly in Chrome/Edge, OR run:
+     ```bash
+     python -m http.server 3000
+     ```
+   - Open `http://localhost:3000` in your browser.
+
+---
+
+### Option B: Python Desktop Version
 1. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
