@@ -1,0 +1,6 @@
+# Exclude Python desktop app files and dependencies from Vercel web deployment
+requirements.txt
+*.py
+hand_landmarker.task
+__pycache__/
+.vscode/
