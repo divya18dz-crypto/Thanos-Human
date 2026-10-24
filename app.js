@@ -248,11 +248,9 @@ function calculateDistance(lm1, lm2) {
 
 function detectFingerStates(landmarks) {
   const wrist = landmarks[0];
-  const pinkyMcp = landmarks[17];
-
-  // Thumb: Tip (4) vs IP (3) relative to Pinky MCP (17)
-  const thumbExtended =
-    calculateDistance(landmarks[4], pinkyMcp) > calculateDistance(landmarks[3], pinkyMcp) * 1.05;
+  const palm = landmarks[9]; // Middle MCP joint (palm scale reference)
+  let palmSize = calculateDistance(wrist, palm);
+  if (palmSize < 0.001) palmSize = 0.1;
 
   const fingerIndices = {
     index: [8, 6, 5],
@@ -261,26 +259,45 @@ function detectFingerStates(landmarks) {
     pinky: [20, 18, 17],
   };
 
-  const states = { thumb: thumbExtended };
+  const states = {};
 
   for (const [fingerName, [tipId, pipId, mcpId]] of Object.entries(fingerIndices)) {
     const tip = landmarks[tipId];
     const pip = landmarks[pipId];
     const mcp = landmarks[mcpId];
 
-    const distTipWrist = calculateDistance(tip, wrist);
-    const distPipWrist = calculateDistance(pip, wrist);
     const distTipMcp = calculateDistance(tip, mcp);
     const distPipMcp = calculateDistance(pip, mcp);
+    const distTipWrist = calculateDistance(tip, wrist);
+    const distPipWrist = calculateDistance(pip, wrist);
+    const distTipPalm = calculateDistance(tip, palm);
 
-    // Finger is extended if tip is farther from wrist & MCP than PIP is,
-    // OR if tip is clearly above PIP when hand is upright
+    const ratioMcp = distTipMcp / Math.max(distPipMcp, 0.0001);
+    const fartherFromWrist = distTipWrist > distPipWrist * 1.05;
+    const farFromPalm = distTipPalm > palmSize * 0.72;
+    const isAbovePip = tip.y < pip.y;
+
+    // Extended if tip clearly projects outward from MCP base bone and wrist/palm
     const isExtended =
-      (distTipWrist > distPipWrist * 1.08 && distTipMcp > distPipMcp) ||
-      (tip.y < pip.y && distTipWrist > distPipWrist);
+      (ratioMcp > 1.35 && (fartherFromWrist || farFromPalm)) ||
+      (isAbovePip && fartherFromWrist && ratioMcp > 1.15);
 
     states[fingerName] = isExtended;
   }
+
+  // Thumb: Tip (4), IP (3), MCP (2) relative to Pinky MCP (17) and Index MCP (5)
+  const thumbTip = landmarks[4];
+  const thumbIp = landmarks[3];
+  const thumbMcp = landmarks[2];
+  const pinkyMcp = landmarks[17];
+
+  const distThumbPinky = calculateDistance(thumbTip, pinkyMcp);
+  const distIpPinky = calculateDistance(thumbIp, pinkyMcp);
+  const distThumbMcp = calculateDistance(thumbTip, thumbMcp);
+
+  const thumbExtended =
+    distThumbPinky > distIpPinky * 1.05 && distThumbMcp > palmSize * 0.55;
+  states.thumb = thumbExtended;
 
   return states;
 }
@@ -288,21 +305,60 @@ function detectFingerStates(landmarks) {
 function classifyGesture(fingerStates, landmarks) {
   const { thumb, index, middle, ring, pinky } = fingerStates;
 
-  // 1. ROCK: All 4 main fingers folded; thumb not pointing up (rejects Thumbs Up)
-  if (!index && !middle && !ring && !pinky) {
-    if (thumb && landmarks[4].y < landmarks[6].y && landmarks[4].y < landmarks[3].y) {
-      return "UNKNOWN"; // Thumbs up rejected
-    }
+  const wrist = landmarks[0];
+  const palm = landmarks[9];
+  let palmSize = calculateDistance(wrist, palm);
+  if (palmSize < 0.001) palmSize = 0.1;
+
+  // Compute average tip distance to palm center (landmarks[9])
+  const tipIndices = [8, 12, 16, 20];
+  const tipDists = tipIndices.map((idx) => calculateDistance(landmarks[idx], palm));
+  const avgTipDist = tipDists.reduce((a, b) => a + b, 0) / tipDists.length;
+
+  const extendedCount = [index, middle, ring, pinky].filter(Boolean).length;
+
+  // Reject ONLY genuine deliberate Thumbs Up (thumb sticking high up away from closed fist)
+  const thumbTip = landmarks[4];
+  const thumbMcp = landmarks[2];
+  const indexMcp = landmarks[5];
+  const isThumbsUp =
+    extendedCount === 0 &&
+    thumb &&
+    thumbTip.y < thumbMcp.y - palmSize * 0.30 &&
+    thumbTip.y < indexMcp.y - palmSize * 0.30 &&
+    calculateDistance(thumbTip, indexMcp) > palmSize * 0.70;
+
+  if (isThumbsUp) {
+    return "UNKNOWN";
+  }
+
+  // 1. ROCK:
+  // High-speed robust fist detection:
+  // - All 4 main fingers folded (extendedCount === 0)
+  // - OR at most 1 finger loose/jittery (extendedCount <= 1) while tips are bundled near palm
+  // - OR average tip distance to palm is small (compact fist regardless of hand orientation)
+  const isRock =
+    extendedCount === 0 ||
+    (extendedCount <= 1 && avgTipDist < palmSize * 0.70) ||
+    (avgTipDist < palmSize * 0.62 && !(index && middle));
+
+  if (isRock) {
     return "ROCK";
   }
 
-  // 2. PAPER: All 4 main fingers extended
+  // 2. PAPER: All 4 main fingers extended (or 3+ with large tip spread)
   if (index && middle && ring && pinky) {
+    return "PAPER";
+  }
+  if (extendedCount >= 3 && avgTipDist > palmSize * 0.88 && !isRock) {
     return "PAPER";
   }
 
   // 3. SCISSORS: Index and Middle extended, Ring and Pinky folded
   if (index && middle && !ring && !pinky) {
+    return "SCISSORS";
+  }
+  if (index && middle && extendedCount === 2) {
     return "SCISSORS";
   }
 
@@ -361,6 +417,7 @@ class GameApp {
     this.liveGesture = "UNKNOWN";
     this.lastValidGesture = null;
     this.lastValidGestureTime = 0;
+    this.shootLockedGesture = null;
     this.currentRoundPlan = null; // { predicted_move, counter_move, ... }
     this.lockedHumanMove = null;
     this.lockedThanosMove = null;
@@ -683,6 +740,7 @@ class GameApp {
 
     this.gameState = "COUNTDOWN";
     this.lobbyBtn.style.display = "inline-flex";
+    this.shootLockedGesture = null;
 
     // Pre-calculate Thanos's counter-move blindly using past history
     this.currentRoundPlan = this.ai.predict();
@@ -723,12 +781,16 @@ class GameApp {
         this.countdownPulse.textContent = "SHOOT!";
         this.countdownSubtext.textContent = "LOCKING GESTURES!";
         sound.playShoot();
+        // Immediately latch valid move at SHOOT!
+        if (this.liveGesture && this.liveGesture !== "UNKNOWN" && this.liveGesture !== "NO_HAND") {
+          this.shootLockedGesture = this.liveGesture;
+        }
       } else {
         clearInterval(this.countdownTimer);
         this.countdownOverlay.style.display = "none";
         this.actionBtn.disabled = false;
 
-        const gestureToLock = overrideGesture || this.liveGesture;
+        const gestureToLock = overrideGesture || this.shootLockedGesture || this.liveGesture;
         this.lockRoundOutcome(gestureToLock);
       }
     }, 750);
@@ -743,12 +805,19 @@ class GameApp {
 
     let finalMove = humanMove;
 
+    if (
+      (!finalMove || finalMove === "UNKNOWN" || finalMove === "NO_HAND") &&
+      this.shootLockedGesture
+    ) {
+      finalMove = this.shootLockedGesture;
+    }
+
     // Grace buffer: if live gesture flickered to UNKNOWN right at SHOOT!,
-    // use the valid gesture held during the last 500ms!
+    // use the valid gesture held during the last 800ms!
     if (
       (!finalMove || finalMove === "UNKNOWN" || finalMove === "NO_HAND") &&
       this.lastValidGesture &&
-      performance.now() - this.lastValidGestureTime < 500
+      performance.now() - this.lastValidGestureTime < 800
     ) {
       finalMove = this.lastValidGesture;
     }
@@ -887,6 +956,7 @@ class GameApp {
     this.lockedThanosMove = null;
     this.lastValidGesture = null;
     this.lastValidGestureTime = 0;
+    this.shootLockedGesture = null;
 
     if (this.countdownTimer) clearInterval(this.countdownTimer);
     this.countdownOverlay.style.display = "none";

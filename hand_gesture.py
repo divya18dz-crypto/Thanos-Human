@@ -290,29 +290,56 @@ def calculate_distance(lm1, lm2) -> float:
 # ==============================================================================
 def detect_finger_states(landmarks) -> dict:
     """
-    Determines whether each finger is EXTENDED (True) or FOLDED (False).
+    Determines whether each finger is EXTENDED (True) or FOLDED (False)
+    using scale-invariant 3D/2D joint geometry and bone ratio kinematics.
     """
     wrist = landmarks[0]
-    pinky_mcp = landmarks[17]
-
-    # Thumb: Tip (4), IP (3) relative to Pinky MCP (17)
-    thumb_extended = calculate_distance(landmarks[4], pinky_mcp) > calculate_distance(landmarks[3], pinky_mcp)
+    palm = landmarks[9]  # Middle MCP joint (palm center reference)
+    palm_size = calculate_distance(wrist, palm)
+    if palm_size < 1e-4:
+        palm_size = 0.1
 
     finger_indices = {
-        "index": (8, 6),
-        "middle": (12, 10),
-        "ring": (16, 14),
-        "pinky": (20, 18),
+        "index": (8, 6, 5),
+        "middle": (12, 10, 9),
+        "ring": (16, 14, 13),
+        "pinky": (20, 18, 17),
     }
 
-    states = {"thumb": thumb_extended}
-
-    for finger_name, (tip_id, pip_id) in finger_indices.items():
+    states = {}
+    for finger_name, (tip_id, pip_id, mcp_id) in finger_indices.items():
         tip = landmarks[tip_id]
         pip = landmarks[pip_id]
+        mcp = landmarks[mcp_id]
+
+        dist_tip_mcp = calculate_distance(tip, mcp)
+        dist_pip_mcp = calculate_distance(pip, mcp)
+        dist_tip_wrist = calculate_distance(tip, wrist)
+        dist_pip_wrist = calculate_distance(pip, wrist)
+        dist_tip_palm = calculate_distance(tip, palm)
+
+        ratio_mcp = dist_tip_mcp / max(dist_pip_mcp, 1e-4)
+        farther_from_wrist = dist_tip_wrist > (dist_pip_wrist * 1.05)
+        far_from_palm = dist_tip_palm > (palm_size * 0.72)
         is_above_pip = tip.y < pip.y
-        is_farther_from_wrist = calculate_distance(tip, wrist) > calculate_distance(pip, wrist)
-        states[finger_name] = is_above_pip and is_farther_from_wrist
+
+        # Extended if tip projects outward from MCP base bone and wrist/palm
+        is_extended = (ratio_mcp > 1.35 and (farther_from_wrist or far_from_palm)) or \
+                      (is_above_pip and farther_from_wrist and ratio_mcp > 1.15)
+        states[finger_name] = is_extended
+
+    # Thumb: Tip (4), IP (3), MCP (2) relative to Pinky MCP (17) and Index MCP (5)
+    thumb_tip = landmarks[4]
+    thumb_ip = landmarks[3]
+    thumb_mcp = landmarks[2]
+    pinky_mcp = landmarks[17]
+
+    dist_thumb_pinky = calculate_distance(thumb_tip, pinky_mcp)
+    dist_ip_pinky = calculate_distance(thumb_ip, pinky_mcp)
+    dist_thumb_mcp = calculate_distance(thumb_tip, thumb_mcp)
+
+    thumb_extended = (dist_thumb_pinky > dist_ip_pinky * 1.05) and (dist_thumb_mcp > palm_size * 0.55)
+    states["thumb"] = thumb_extended
 
     return states
 
@@ -320,25 +347,67 @@ def detect_finger_states(landmarks) -> dict:
 def classify_gesture(finger_states: dict, landmarks) -> tuple:
     """
     Classifies finger states into ROCK, PAPER, SCISSORS, or UNKNOWN.
+    Features fast, highly robust fist detection invariant to hand tilt,
+    allowing instant recognition of ROCK as soon as fingers fold.
     """
-    thumb = finger_states["thumb"]
     index = finger_states["index"]
     middle = finger_states["middle"]
     ring = finger_states["ring"]
     pinky = finger_states["pinky"]
+    thumb = finger_states["thumb"]
 
-    # 1. ROCK: All 4 main fingers folded; thumb not pointing up (rejects Thumbs Up)
-    if not index and not middle and not ring and not pinky:
-        if thumb and (landmarks[4].y < landmarks[6].y):
-            return "UNKNOWN", COLOR_UNKNOWN
+    wrist = landmarks[0]
+    palm = landmarks[9]
+    palm_size = calculate_distance(wrist, palm)
+    if palm_size < 1e-4:
+        palm_size = 0.1
+
+    # Compute average tip distance to palm center (landmarks[9])
+    tip_indices = [8, 12, 16, 20]
+    tip_dists = [calculate_distance(landmarks[i], palm) for i in tip_indices]
+    avg_tip_dist = sum(tip_dists) / len(tip_dists)
+
+    extended_count = sum([1 for f in [index, middle, ring, pinky] if f])
+
+    # Reject ONLY genuine deliberate Thumbs Up (thumb sticking high up away from closed fist)
+    thumb_tip = landmarks[4]
+    thumb_mcp = landmarks[2]
+    index_mcp = landmarks[5]
+    is_thumbs_up = (
+        extended_count == 0 and
+        thumb and
+        (thumb_tip.y < thumb_mcp.y - palm_size * 0.30) and
+        (thumb_tip.y < index_mcp.y - palm_size * 0.30) and
+        (calculate_distance(thumb_tip, index_mcp) > palm_size * 0.70)
+    )
+
+    if is_thumbs_up:
+        return "UNKNOWN", COLOR_UNKNOWN
+
+    # 1. ROCK:
+    # High-speed robust fist detection:
+    # - All 4 main fingers folded (extended_count == 0)
+    # - OR at most 1 finger loose/jittery (extended_count <= 1) while tips are bundled near palm
+    # - OR average tip distance to palm is small (compact fist regardless of hand orientation)
+    is_rock = (
+        (extended_count == 0) or
+        (extended_count <= 1 and avg_tip_dist < palm_size * 0.70) or
+        (avg_tip_dist < palm_size * 0.62 and not (index and middle))
+    )
+
+    if is_rock:
         return "ROCK", COLOR_ROCK
 
-    # 2. PAPER: All 4 main fingers extended
+    # 2. PAPER: All 4 main fingers extended (or 3+ with large tip spread)
     if index and middle and ring and pinky:
+        return "PAPER", COLOR_PAPER
+    if extended_count >= 3 and avg_tip_dist > palm_size * 0.88 and not is_rock:
         return "PAPER", COLOR_PAPER
 
     # 3. SCISSORS: Index and Middle extended, Ring and Pinky folded
     if index and middle and not ring and not pinky:
+        return "SCISSORS", COLOR_SCISSORS
+    if index and middle and extended_count == 2:
         return "SCISSORS", COLOR_SCISSORS
 
     return "UNKNOWN", COLOR_UNKNOWN
@@ -1195,12 +1264,15 @@ def main():
     outcome_title = ""
     outcome_desc = ""
     outcome_color = COLOR_TEXT_WHITE
+    last_valid_gesture = None
+    last_valid_time = 0.0
 
     def reset_match():
         """Cleans all match data, scores, rounds, and AI history for the next player."""
         nonlocal completed_rounds, human_score, thanos_score, draw_count, match_history
         nonlocal locked_human_move, locked_thanos_move, outcome_code
         nonlocal outcome_title, outcome_desc, outcome_color, current_state
+        nonlocal last_valid_gesture, last_valid_time
 
         completed_rounds = 0
         human_score = 0
@@ -1209,6 +1281,8 @@ def main():
         match_history = []
         locked_human_move = None
         locked_thanos_move = None
+        last_valid_gesture = None
+        last_valid_time = 0.0
         outcome_code = ""
         outcome_title = ""
         outcome_desc = ""
@@ -1296,6 +1370,10 @@ def main():
                 finger_states = detect_finger_states(landmarks)
                 gesture, gesture_color = classify_gesture(finger_states, landmarks)
 
+                if gesture in ["ROCK", "PAPER", "SCISSORS"]:
+                    last_valid_gesture = gesture
+                    last_valid_time = time.perf_counter()
+
             # -------------------------------------------------------------
             # State Machine & Screen Flow
             # -------------------------------------------------------------
@@ -1318,16 +1396,20 @@ def main():
                     fps, mx, my
                 )
 
-                # 1. At the SHOOT! moment (3.0s onwards), capture and lock the human move only
-                # Thanos's move remains completely hidden; scores are NOT updated yet
-                if elapsed >= 3.0 and locked_human_move is None:
+                # 1. At the SHOOT! moment (or entering shoot window), capture and lock the human move immediately
+                if elapsed >= 2.8 and locked_human_move is None:
                     if gesture in ["ROCK", "PAPER", "SCISSORS"]:
                         locked_human_move = gesture
                         print(f" [SHOOT! Event] Human move locked: {locked_human_move}. Thanos move remains hidden until reveal.")
+                    elif last_valid_gesture and (time.perf_counter() - last_valid_time < 0.8):
+                        locked_human_move = last_valid_gesture
+                        print(f" [SHOOT! Event] Human move locked from grace buffer: {locked_human_move}.")
 
                 # 2. After SHOOT! finishes (elapsed >= TOTAL_COUNTDOWN_TIME):
                 # Now and only now do we reveal Thanos's move, resolve winner, and update scoreboard
                 if elapsed >= TOTAL_COUNTDOWN_TIME:
+                    if locked_human_move is None and last_valid_gesture and (time.perf_counter() - last_valid_time < 0.8):
+                        locked_human_move = last_valid_gesture
                     if locked_human_move is not None:
                         # Reveal Thanos's preselected move
                         locked_thanos_move = preselected_thanos_move
